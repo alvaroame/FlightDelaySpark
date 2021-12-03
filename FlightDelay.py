@@ -28,11 +28,10 @@ def main(spark):
     #we consider these variables as redundant information in the data set
     redundants = ('DepTime','CRSElapsedTime')
 
-    flightsDF = spark.read.csv(path, header=True)\
-        .drop(*forbidden+irrelevants+redundants)
+    flightsDF = spark.read.csv(path, header=True).drop(*forbidden+irrelevants+redundants)
 
     #dummy = ('Month', 'DayOfWeek', 'UniqueCarrier')
-    #toDiscretazion = ('CRSDepTime', 'CRSArrTime', 'Distance', 'Origin')
+    #todiscretization = ('CRSDepTime', 'CRSArrTime', 'Distance', 'Origin')
     #toInteger = ('ArrDelay', 'DepDelay', 'TaxiOut', 'Cancelled',)
 
     flightsDF = flightsDF.withColumn('CRSDepTime', col('CRSDepTime').cast('integer'))
@@ -41,51 +40,60 @@ def main(spark):
     flightsDF = flightsDF.withColumn('ArrDelay', col('ArrDelay').cast('integer'))
     flightsDF = flightsDF.withColumn('DepDelay', col('DepDelay').cast('integer'))
     flightsDF = flightsDF.withColumn('TaxiOut', col('TaxiOut').cast('integer'))
-    flightsDF = flightsDF.withColumn('Cancelled', col('Cancelled').cast('integer'))
+    flightsDF = flightsDF.withColumn('Cancelled', col('Cancelled').cast('boolean'))
 
-    flightsDF = flightsDF.withColumn('Month', col('Month').cast('integer'))
-    flightsDF = flightsDF.withColumn('DayOfWeek', col('DayOfWeek').cast('integer'))
-
-    flightsDF = flightsDF.filter(col("Cancelled") == 0)
+    #We have missing values, most of them (99%) it's because of cancelled flights
+    flightsDF = flightsDF.filter(col("Cancelled") == False)
     flightsDF = flightsDF.drop('Cancelled')
     flightsDF = flightsDF.na.drop()
 
-    #Discretation of CRSDepTime => Transforming Departures times in morning, afternoon, evening and night
+    #Discretization of CRSDepTime => Transforming Departures times in morning, afternoon, evening and night
     splits_hours = [-float('inf'), 600, 1200, 1800, float('inf')]
     bucketizer = Bucketizer(splits=splits_hours, inputCol='CRSDepTime', outputCol='CRSDepTimeCat')
     flightsDF = bucketizer.transform(flightsDF)
     bucketizer = Bucketizer(splits=splits_hours, inputCol='CRSArrTime', outputCol='CRSArrTimeCat')
     flightsDF = bucketizer.transform(flightsDF)
 
-    #Discretation of Distance => Transforming Distances in short, medium, large
+    #Discretization of Distance => Transforming Distances in short, medium, large
     splits_distances = [-float('inf'), 500, 1500, float('inf')]
     bucketizer = Bucketizer(splits=splits_distances, inputCol='Distance', outputCol='DistanceCat')
     flightsDF = bucketizer.transform(flightsDF)
 
-    #Discretation of Origin => According to number of flight in the airport small-hub, medium, larga, big
-    flightsDF = flightsDF.withColumn("SizeOfOrigin",F.count(col('Origin')).over(Window.partitionBy(flightsDF.Origin)))
-    splits_size = [-float('inf'), 25000, 50000, 150000, float('inf')]
-    bucketizer = Bucketizer(splits=splits_size, inputCol='SizeOfOrigin', outputCol='SizeOfOriginCat')
-    flightsDF = bucketizer.transform(flightsDF)
-
-    #airportsDF = flightsDF.groupBy('Origin').agg(F.count(col('Origin')).alias('SizeOfOrigin'))
+    #Discretization of Origin (airport) => According to number of flights small, medium, large, big
+    #flightsDF = flightsDF.withColumn("SizeOfOrigin", F.count(col('Origin')).over(Window.partitionBy(flightsDF.Origin)))
     #splits_size = [-float('inf'), 25000, 50000, 150000, float('inf')]
     #bucketizer = Bucketizer(splits=splits_size, inputCol='SizeOfOrigin', outputCol='SizeOfOriginCat')
-    #airportsDF = bucketizer.transform(airportsDF)
+    #flightsDF = bucketizer.transform(flightsDF)
 
-    #flightsDF = flightsDF.join(airportsDF, 'Origin')
+    #Discretization of Origin (airport) => According to number of flights small, medium, large, big
+    airportsDF = flightsDF.groupBy('Origin').agg(F.count(col('Origin')).alias('SizeOfOrigin'))
+    splits_size = [-float('inf'), 25000, 50000, 150000, float('inf')]
+    bucketizer = Bucketizer(splits=splits_size, inputCol='SizeOfOrigin', outputCol='SizeOfOriginCat')
+    airportsDF = bucketizer.transform(airportsDF)
+    flightsDF = flightsDF.join(airportsDF, 'Origin')
+
+    #Now, we can drop some variables
+    flightsDF = flightsDF.drop('CRSDepTime', 'CRSArrTime', 'Distance', 'Origin', 'SizeOfOrigin')
 
     # Transforming categorical variables to numeric
-    indexer = StringIndexer(inputCol="UniqueCarrier", outputCol="UniqueCarrierNum")
+    indexer = StringIndexer(inputCols=['Month', 'DayOfWeek', 'UniqueCarrier', 'CRSDepTimeCat', 'CRSArrTimeCat', 'DistanceCat', 'SizeOfOriginCat'],
+                            outputCols=['MonthNum', 'DayOfWeekNum', 'UniqueCarrierNum', 'CRSDepTimeNum', 'CRSArrTimeNum', 'DistanceNum', 'SizeOfOriginNum'])
     flightsDF = indexer.fit(flightsDF).transform(flightsDF)
 
+    # Now, we can drop categorical variables
+    flightsDF = flightsDF.drop('Month', 'DayOfWeek', 'UniqueCarrier', 'CRSDepTimeCat', 'CRSArrTimeCat', 'DistanceCat', 'SizeOfOriginCat')
+
     # ONE-HOT encoding for categorical variables
-    encoder = OneHotEncoder(inputCols=['Month', 'DayOfWeek', 'UniqueCarrierNum', 'CRSDepTimeCat', 'CRSArrTimeCat', 'DistanceCat', 'SizeOfOriginCat'],
-                            outputCols=['MonthOH', 'DayOfWeekOH', 'UniqueCarrierOH', 'CRSDepTimeOH', 'CRSArrTimeOH', 'DistanceOH', 'SizeOfOriginOH'])
+    encoder = OneHotEncoder(inputCols=['MonthNum', 'DayOfWeekNum', 'UniqueCarrierNum', 'CRSDepTimeNum', 'CRSArrTimeNum', 'DistanceNum', 'SizeOfOriginNum'],
+                            outputCols=['MonthOH', 'DayOfWeekOH', 'UniqueCarrierOH', 'CRSDepTimeOH', 'CRSArrTimeOH', 'DistanceOH', 'SizeOfOriginOH'],
+                            dropLast=False)
     flightsDF = encoder.fit(flightsDF).transform(flightsDF)
 
+    # Now, we can drop categorical variables
+    flightsDF = flightsDF.drop('MonthNum', 'DayOfWeekNum', 'UniqueCarrierNum', 'CRSDepTimeNum', 'CRSArrTimeNum', 'DistanceNum', 'SizeOfOriginNum')
+
     #Selection of variables
-    features = ['DepDelay', 'TaxiOut', 'MonthOH', 'DayOfWeekOH', 'UniqueCarrierOH', 'CRSDepTimeOH', 'CRSArrTimeOH','DistanceOH', 'SizeOfOriginOH']
+    features = ['DepDelay', 'TaxiOut', 'DistanceOH', 'CRSDepTimeOH', 'SizeOfOriginOH', 'CRSArrTimeOH', 'MonthOH', 'DayOfWeekOH', 'UniqueCarrierOH']
     vectorAssembler = VectorAssembler(inputCols=features, outputCol='features')
 
     vdf_sel = vectorAssembler.transform(flightsDF)

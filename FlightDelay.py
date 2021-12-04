@@ -131,12 +131,12 @@ def main(spark, path="data/*.csv", sample=1.0, log='WARN'):
     # Grids of hyperparameters used to find the best
     paramGridLR = ParamGridBuilder() \
         .addGrid(lr.maxIter, [25, 100]) \
-        .addGrid(lr.regParam, [0.0, 0.1, 0.01]) \
+        .addGrid(lr.regParam, [0.1, 0.01, 0.001]) \
         .build()
 
     paramGridGLR = ParamGridBuilder() \
         .addGrid(glr.maxIter, [25, 100]) \
-        .addGrid(glr.regParam, [0.0, 0.1, 0.01]) \
+        .addGrid(glr.regParam, [0.1, 0.01, 0.001]) \
         .build()
 
     # Defining the train-validation
@@ -164,7 +164,10 @@ def main(spark, path="data/*.csv", sample=1.0, log='WARN'):
     print("regParam: ", bestModelLR._java_obj.getRegParam())
     print("maxIter: ", bestModelLR._java_obj.getMaxIter())
     print("elasticNetParam", bestModelLR._java_obj.getElasticNetParam())
-    print(trainingSummaryLR)
+    print("RMSE: ", trainingSummaryLR.rootMeanSquaredError)
+    print("MSE: ", trainingSummaryLR.meanSquaredError)
+    print("MAE: ", trainingSummaryLR.meanAbsoluteError)
+    print("R2: ", trainingSummaryLR.r2)
 
     # Finding the best model for Generalized Regression Model using training data
     print('**** Computing Generalized Regression Model ****')
@@ -202,7 +205,8 @@ def main(spark, path="data/*.csv", sample=1.0, log='WARN'):
     print('R2: ', R2GLR)
 
 
-    # Selecting the best model
+    # Selecting the best model by comparin the RMSE,
+    # The best model is which minimizes the RMSE
     if RMSELR <= RMSEGLR:
         print('The best model is the Linear Regression Model')
         bestModel = tvModelLR

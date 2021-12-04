@@ -228,7 +228,7 @@ def main(spark, path="data/*.csv", sample=1.0, log='WARN'):
 
 if __name__ == "__main__":
     # Arguments
-    # path: The path for CSV files; default data/*.csv
+    # path: The path for CSV files; default: data/*.csv
     # sample: The fraction [0-1] for sampling the data set; default: 1.0
     # log level: Log level: INFO, WARN, ERROR; default: WARN
     print(sys.argv)

@@ -12,7 +12,7 @@ from pyspark.ml.feature import QuantileDiscretizer
 from pyspark.ml.feature import Bucketizer
 from pyspark.ml.regression import LinearRegression
 from pyspark.ml.evaluation import RegressionEvaluator
-from pyspark.ml.tuning import CrossValidator
+from pyspark.ml.tuning import CrossValidator, TrainValidationSplit
 from pyspark.ml.tuning import ParamGridBuilder
 from pyspark.ml import Pipeline
 
@@ -88,7 +88,7 @@ def main(spark):
     airportsDF.unpersist()
 
     # Split data in training and testing
-    split = flightsDF.randomSplit([0.7, 0.3], seed=132)
+    split = flightsDF.randomSplit([0.8, 0.2], seed=132)
     training = split[0]
     test = split[1]
 
@@ -124,6 +124,12 @@ def main(spark):
                               estimatorParamMaps=paramGrid,
                               evaluator=RegressionEvaluator(labelCol='ArrDelay'),
                               numFolds=4)
+
+    crossval = TrainValidationSplit(estimator=regressionPipeline,
+                               estimatorParamMaps=paramGrid,
+                               evaluator=RegressionEvaluator(labelCol='ArrDelay'),
+                               # 80% of the data will be used for training, 20% for validation.
+                               trainRatio=0.8)
 
     cvModel = crossval.fit(training)
 

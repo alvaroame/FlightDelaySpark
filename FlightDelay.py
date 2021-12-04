@@ -12,28 +12,32 @@ from pyspark.ml.feature import QuantileDiscretizer
 from pyspark.ml.feature import Bucketizer
 from pyspark.ml.regression import LinearRegression
 from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml import Pipeline
 
 
 def main(spark):
     path = sys.argv[1]
     print('Searching files in ', path)
 
-    #Forbidden variables
+    # Forbidden variables
     forbidden = ('ArrTime', 'ActualElapsedTime', 'AirTime', 'TaxiIn', 'Diverted', 'CarrierDelay',
                  'WeatherDelay', 'NASDelay', 'SecurityDelay', 'LateAircraftDelay')
 
-    #we consider these variables as irrelevant
-    irrelevants = ('Year', 'DayofMonth', 'FlightNum', 'TailNum', 'CancellationCode','Dest')
+    # we consider these variables as irrelevant
+    # They don't give us relevant information
+    irrelevants = ('Year', 'DayofMonth', 'FlightNum', 'TailNum', 'CancellationCode', 'Dest')
 
-    #we consider these variables as redundant information in the data set
-    redundants = ('DepTime','CRSElapsedTime')
+    # we consider these variables as redundant information in the data set
+    # They are represented in other variables; DepTime = CRSDepTime - DepDelay
+    redundants = ('DepTime', 'CRSElapsedTime')
 
-    flightsDF = spark.read.csv(path, header=True).drop(*forbidden+irrelevants+redundants)
+    flightsDF = spark.read.csv(path, header=True).drop(*forbidden + irrelevants + redundants)
 
-    #dummy = ('Month', 'DayOfWeek', 'UniqueCarrier')
-    #todiscretization = ('CRSDepTime', 'CRSArrTime', 'Distance', 'Origin')
-    #toInteger = ('ArrDelay', 'DepDelay', 'TaxiOut', 'Cancelled',)
+    # dummy = ('Month', 'DayOfWeek', 'UniqueCarrier')
+    # toDiscretization = ('CRSDepTime', 'CRSArrTime', 'Distance', 'Origin')
+    # toInteger = ('ArrDelay', 'DepDelay', 'TaxiOut', 'Cancelled',)
 
+    # We cast all numerical and boolean variables
     flightsDF = flightsDF.withColumn('CRSDepTime', col('CRSDepTime').cast('integer'))
     flightsDF = flightsDF.withColumn('CRSArrTime', col('CRSArrTime').cast('integer'))
     flightsDF = flightsDF.withColumn('Distance', col('Distance').cast('integer'))
@@ -42,75 +46,75 @@ def main(spark):
     flightsDF = flightsDF.withColumn('TaxiOut', col('TaxiOut').cast('integer'))
     flightsDF = flightsDF.withColumn('Cancelled', col('Cancelled').cast('boolean'))
 
-    #We have missing values, most of them (99%) it's because of cancelled flights
+    # We have missing values, most of them (99%) it's because of cancelled flights
+    # we remove all the cancelled flights, the remaining missing values are deleted too
     flightsDF = flightsDF.filter(col("Cancelled") == False)
     flightsDF = flightsDF.drop('Cancelled')
     flightsDF = flightsDF.na.drop()
 
-    #Discretization of CRSDepTime => Transforming Departures times in morning, afternoon, evening and night
-    splits_hours = [-float('inf'), 600, 1200, 1800, float('inf')]
-    bucketizer = Bucketizer(splits=splits_hours, inputCol='CRSDepTime', outputCol='CRSDepTimeCat')
-    flightsDF = bucketizer.transform(flightsDF)
-    bucketizer = Bucketizer(splits=splits_hours, inputCol='CRSArrTime', outputCol='CRSArrTimeCat')
-    flightsDF = bucketizer.transform(flightsDF)
+    # Discretization of Departures and Arrivals => Transforming Departures times in morning, afternoon, evening and night
+    splitHours = [-float('inf'), 600, 1200, 1800, float('inf')]
+    discretizationCRSDepTime = Bucketizer(splits=splitHours, inputCol='CRSDepTime', outputCol='CRSDepTimeCat')
+    discretizationCRSArrTime = Bucketizer(splits=splitHours, inputCol='CRSArrTime', outputCol='CRSArrTimeCat')
 
-    #Discretization of Distance => Transforming Distances in short, medium, large
-    splits_distances = [-float('inf'), 500, 1500, float('inf')]
-    bucketizer = Bucketizer(splits=splits_distances, inputCol='Distance', outputCol='DistanceCat')
-    flightsDF = bucketizer.transform(flightsDF)
+    # Discretization of Distance => Transforming Distances in short, medium and large
+    splitDistances = [-float('inf'), 500, 1500, float('inf')]
+    discretizationDistance = Bucketizer(splits=splitDistances, inputCol='Distance', outputCol='DistanceCat')
 
-    #Discretization of Origin (airport) => According to number of flights small, medium, large, big
-    #flightsDF = flightsDF.withColumn("SizeOfOrigin", F.count(col('Origin')).over(Window.partitionBy(flightsDF.Origin)))
-    #splits_size = [-float('inf'), 25000, 50000, 150000, float('inf')]
-    #bucketizer = Bucketizer(splits=splits_size, inputCol='SizeOfOrigin', outputCol='SizeOfOriginCat')
-    #flightsDF = bucketizer.transform(flightsDF)
+    # This pipeline performs the discretization steps
+    pipelineDiscretization = Pipeline(stages=[discretizationCRSDepTime, discretizationCRSArrTime, discretizationDistance])
+    pipelineModelDiscretization = pipelineDiscretization.fit(flightsDF)
+    flightsDF = pipelineModelDiscretization.transform(flightsDF)
 
-    #Discretization of Origin (airport) => According to number of flights small, medium, large, big
-    airportsDF = flightsDF.groupBy('Origin').agg(F.count(col('Origin')).alias('SizeOfOrigin'))
-    splits_size = [-float('inf'), 25000, 50000, 150000, float('inf')]
-    bucketizer = Bucketizer(splits=splits_size, inputCol='SizeOfOrigin', outputCol='SizeOfOriginCat')
+    # Discretization of Origin (airport) => According to number of flights small, medium, large, big
+    # flightsDF = flightsDF.withColumn("AirportSize", F.count(col('Origin')).over(Window.partitionBy(flightsDF.Origin)))
+    # splitSize = [-float('inf'), 25000, 50000, 150000, float('inf')]
+    # bucketizer = Bucketizer(splits=splitSize, inputCol='AirportSize', outputCol='AirportSizeCat')
+    # flightsDF = bucketizer.transform(flightsDF)
+
+    # Discretization of Origins (airport) => According to number of flights small, medium, large and big
+    # First, we compute the total amount of flights in every Origin, then we classify them
+    airportsDF = flightsDF.groupBy('Origin').agg(F.count(col('Origin')).alias('AirportSize'))
+    splitSize = [-float('inf'), 25000, 50000, 150000, float('inf')]
+    bucketizer = Bucketizer(splits=splitSize, inputCol='AirportSize', outputCol='AirportSizeCat')
     airportsDF = bucketizer.transform(airportsDF)
     flightsDF = flightsDF.join(airportsDF, 'Origin')
 
-    #Now, we can drop some variables
-    flightsDF = flightsDF.drop('CRSDepTime', 'CRSArrTime', 'Distance', 'Origin', 'SizeOfOrigin')
+    # Split data in training and testing
+    split = flightsDF.randomSplit([0.7, 0.3], seed=132)
+    training = split[0]
+    test = split[1]
 
     # Transforming categorical variables to numeric
-    indexer = StringIndexer(inputCols=['Month', 'DayOfWeek', 'UniqueCarrier', 'CRSDepTimeCat', 'CRSArrTimeCat', 'DistanceCat', 'SizeOfOriginCat'],
-                            outputCols=['MonthNum', 'DayOfWeekNum', 'UniqueCarrierNum', 'CRSDepTimeNum', 'CRSArrTimeNum', 'DistanceNum', 'SizeOfOriginNum'])
-    flightsDF = indexer.fit(flightsDF).transform(flightsDF)
-
-    # Now, we can drop categorical variables
-    flightsDF = flightsDF.drop('Month', 'DayOfWeek', 'UniqueCarrier', 'CRSDepTimeCat', 'CRSArrTimeCat', 'DistanceCat', 'SizeOfOriginCat')
+    indexer = StringIndexer(
+        inputCols=['Month', 'DayOfWeek', 'UniqueCarrier', 'CRSDepTimeCat', 'CRSArrTimeCat', 'DistanceCat', 'AirportSizeCat'],
+        outputCols=['MonthNum', 'DayOfWeekNum', 'UniqueCarrierNum', 'CRSDepTimeNum', 'CRSArrTimeNum', 'DistanceNum', 'AirportSizeNum'])
 
     # ONE-HOT encoding for categorical variables
-    encoder = OneHotEncoder(inputCols=['MonthNum', 'DayOfWeekNum', 'UniqueCarrierNum', 'CRSDepTimeNum', 'CRSArrTimeNum', 'DistanceNum', 'SizeOfOriginNum'],
-                            outputCols=['MonthOH', 'DayOfWeekOH', 'UniqueCarrierOH', 'CRSDepTimeOH', 'CRSArrTimeOH', 'DistanceOH', 'SizeOfOriginOH'],
+    encoder = OneHotEncoder(inputCols=['MonthNum', 'DayOfWeekNum', 'UniqueCarrierNum', 'CRSDepTimeNum', 'CRSArrTimeNum', 'DistanceNum', 'AirportSizeNum'],
+                            outputCols=['MonthOH', 'DayOfWeekOH', 'UniqueCarrierOH', 'CRSDepTimeOH', 'CRSArrTimeOH', 'DistanceOH', 'AirportSizeOH'],
                             dropLast=False)
-    flightsDF = encoder.fit(flightsDF).transform(flightsDF)
 
-    # Now, we can drop categorical variables
-    flightsDF = flightsDF.drop('MonthNum', 'DayOfWeekNum', 'UniqueCarrierNum', 'CRSDepTimeNum', 'CRSArrTimeNum', 'DistanceNum', 'SizeOfOriginNum')
+    # Selection of variables
+    features = ['DepDelay', 'TaxiOut', 'DistanceOH', 'CRSDepTimeOH', 'AirportSizeOH', 'CRSArrTimeOH', 'MonthOH',
+                'DayOfWeekOH', 'UniqueCarrierOH']
+    assembler = VectorAssembler(inputCols=features, outputCol='features')
 
-    #Selection of variables
-    features = ['DepDelay', 'TaxiOut', 'DistanceOH', 'CRSDepTimeOH', 'SizeOfOriginOH', 'CRSArrTimeOH', 'MonthOH', 'DayOfWeekOH', 'UniqueCarrierOH']
-    vectorAssembler = VectorAssembler(inputCols=features, outputCol='features')
+    # Implementing a Linear Regression Model
+    lr = LinearRegression(featuresCol='features', labelCol='ArrDelay', maxIter=10,
+                          regParam=0.3, elasticNetParam=0.8)
 
-    vdf_sel = vectorAssembler.transform(flightsDF)
-    vdf_sel = vdf_sel.select(['features', 'ArrDelay'])
+    # Fit the pipeline to training data
+    regressionPipeline = Pipeline(stages=[indexer, encoder, assembler, lr])
+    model = regressionPipeline.fit(training)
 
-    # split dataframes
-    splits = vdf_sel.randomSplit([0.7, 0.3])
-    train_df = splits[0]
-    test_df = splits[1]
+    # Make predictions on test data
+    prediction = model.transform(test)
 
-    lr = LinearRegression(featuresCol='features', labelCol='ArrDelay', maxIter=10, regParam=0.3, elasticNetParam=0.8)
-    lr_model = lr.fit(train_df)
-    trainingSummary = lr_model.summary
-    print("RMSE: %f" % trainingSummary.rootMeanSquaredError)
-    print("r2: %f" % trainingSummary.r2)
-    print("Coefficients: " + str(lr_model.coefficients))
-    print("Intercept: " + str(lr_model.intercept))
+    # evaluate the model
+    evaluator = RegressionEvaluator(metricName="r2", labelCol='ArrDelay', predictionCol='prediction')
+    R2 = evaluator.evaluate(prediction)
+    print('R2 ', R2)
 
     spark.stop()
 

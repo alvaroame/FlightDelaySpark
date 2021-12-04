@@ -12,12 +12,15 @@ from pyspark.ml.feature import QuantileDiscretizer
 from pyspark.ml.feature import Bucketizer
 from pyspark.ml.regression import LinearRegression
 from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.tuning import CrossValidator
+from pyspark.ml.tuning import ParamGridBuilder
 from pyspark.ml import Pipeline
 
-
 def main(spark):
+    spark.sparkContext.setLogLevel('INFO')
+
     path = sys.argv[1]
-    print('Searching files in ', path)
+    print('Searching files in: ', path)
 
     # Forbidden variables
     forbidden = ('ArrTime', 'ActualElapsedTime', 'AirTime', 'TaxiIn', 'Diverted', 'CarrierDelay',
@@ -79,6 +82,10 @@ def main(spark):
     bucketizer = Bucketizer(splits=splitSize, inputCol='AirportSize', outputCol='AirportSizeCat')
     airportsDF = bucketizer.transform(airportsDF)
     flightsDF = flightsDF.join(airportsDF, 'Origin')
+    flightsDF = flightsDF.drop('CRSDepTime', 'CRSArrTime', 'Distance', 'Origin', 'AirportSize')
+
+    # we can delete the airport DF
+    airportsDF.unpersist()
 
     # Split data in training and testing
     split = flightsDF.randomSplit([0.7, 0.3], seed=132)
@@ -100,21 +107,48 @@ def main(spark):
                 'DayOfWeekOH', 'UniqueCarrierOH']
     assembler = VectorAssembler(inputCols=features, outputCol='features')
 
+    print('Linear Regression Model')
     # Implementing a Linear Regression Model
     lr = LinearRegression(featuresCol='features', labelCol='ArrDelay', maxIter=10,
                           regParam=0.3, elasticNetParam=0.8)
 
     # Fit the pipeline to training data
     regressionPipeline = Pipeline(stages=[indexer, encoder, assembler, lr])
-    model = regressionPipeline.fit(training)
+
+    paramGrid = ParamGridBuilder() \
+        .addGrid(lr.maxIter, [10, 50, 100]) \
+        .addGrid(lr.regParam, [0.3, 0.1, 0.01]) \
+        .build()
+
+    crossval = CrossValidator(estimator=regressionPipeline,
+                              estimatorParamMaps=paramGrid,
+                              evaluator=RegressionEvaluator(labelCol='ArrDelay'),
+                              numFolds=4)
+
+    cvModel = crossval.fit(training)
 
     # Make predictions on test data
-    prediction = model.transform(test)
+    prediction = cvModel.transform(test)
+
+    print('****Linear Regression Model ****')
+    bestModel = cvModel.bestModel.stages[-1]
+    trainingSummary = bestModel.summary
+    print("Coefficients: ", str(bestModel.coefficients))
+    print("Intercept: ", str(bestModel.intercept))
+    print("RMSE: ", trainingSummary.rootMeanSquaredError)
+    print("R2: ", trainingSummary.r2)
+    print("regParam: ", bestModel._java_obj.getRegParam())
+    print("maxIter: ", bestModel._java_obj.getMaxIter())
+    print("elasticNetParam", bestModel._java_obj.getElasticNetParam())
 
     # evaluate the model
-    evaluator = RegressionEvaluator(metricName="r2", labelCol='ArrDelay', predictionCol='prediction')
-    R2 = evaluator.evaluate(prediction)
-    print('R2 ', R2)
+    evaluatorR2 = RegressionEvaluator(metricName="r2", labelCol='ArrDelay', predictionCol='prediction')
+    evaluatorRMSE = RegressionEvaluator(metricName="rmse", labelCol='ArrDelay', predictionCol='prediction')
+    R2 = evaluatorR2.evaluate(prediction)
+    RMSE = evaluatorRMSE.evaluate(prediction)
+    print('****Evaluation of the model on test ****')
+    print('R2: ', R2)
+    print('RMSE: ', RMSE)
 
     spark.stop()
 
